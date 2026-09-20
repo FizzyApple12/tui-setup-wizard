@@ -1152,15 +1152,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "setup_wizard"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "ratatui",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1422,6 +1413,15 @@ name = "time-core"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "tui_setup_wizard"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "typenum"
