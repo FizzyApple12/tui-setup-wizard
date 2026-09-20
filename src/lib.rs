@@ -1,0 +1,1106 @@
+use std::{collections::HashMap, io::Stdout, marker::PhantomData};
+
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Terminal, TerminalOptions, Viewport,
+    backend::CrosstermBackend,
+    buffer::Buffer,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Paragraph, Widget},
+};
+use thiserror::Error;
+
+pub struct SetupWizard<'a, T> {
+    title: Option<&'a str>,
+
+    steps: &'a [SetupWizardStep<'a, T>],
+}
+
+type Conditional<'a> = (&'a str, Box<dyn Fn(&SetupWizardAnswer) -> bool>);
+type Validator<'a, I> = (Box<dyn Fn(&I) -> bool>, &'a str);
+type ApplyFn<'a, T, I> = Box<dyn Fn(&mut T, &I)>;
+
+pub struct SetupWizardStep<'a, T> {
+    label: &'a str,
+    id: Option<&'a str>,
+    conditionals: Vec<Conditional<'a>>,
+
+    kind: SetupWizardStepKind<'a, T>,
+}
+
+enum SetupWizardStepKind<'a, T> {
+    Section,
+    Warning,
+    Text {
+        apply_fn: Option<ApplyFn<'a, T, String>>,
+        validators: Vec<Validator<'a, String>>,
+        default: Option<&'a str>,
+    },
+    SignedNumber {
+        apply_fn: Option<ApplyFn<'a, T, isize>>,
+        validators: Vec<Validator<'a, isize>>,
+        default: Option<isize>,
+    },
+    UnsignedNumber {
+        apply_fn: Option<ApplyFn<'a, T, usize>>,
+        validators: Vec<Validator<'a, usize>>,
+        default: Option<usize>,
+    },
+    Select {
+        options: &'a [&'a str],
+        apply_fn: Option<ApplyFn<'a, T, usize>>,
+        default: usize,
+    },
+    Enable {
+        apply_fn: Option<ApplyFn<'a, T, bool>>,
+        default: bool,
+    },
+}
+
+pub struct SetupWizardStepSectionBuilder<'a, T> {
+    label: &'a str,
+    conditionals: Vec<Conditional<'a>>,
+
+    phantom_data: PhantomData<T>,
+}
+
+pub struct SetupWizardStepWarningBuilder<'a, T> {
+    label: &'a str,
+    conditionals: Vec<Conditional<'a>>,
+
+    phantom_data: PhantomData<T>,
+}
+
+pub struct SetupWizardStepTextBuilder<'a, T> {
+    label: &'a str,
+    id: Option<&'a str>,
+    conditionals: Vec<Conditional<'a>>,
+
+    apply_fn: Option<ApplyFn<'a, T, String>>,
+    validators: Vec<Validator<'a, String>>,
+    default: Option<&'a str>,
+}
+
+pub struct SetupWizardStepSignedNumberBuilder<'a, T> {
+    label: &'a str,
+    id: Option<&'a str>,
+    conditionals: Vec<Conditional<'a>>,
+
+    apply_fn: Option<ApplyFn<'a, T, isize>>,
+    validators: Vec<Validator<'a, isize>>,
+    default: Option<isize>,
+}
+
+pub struct SetupWizardStepUnsignedNumberBuilder<'a, T> {
+    label: &'a str,
+    id: Option<&'a str>,
+    conditionals: Vec<Conditional<'a>>,
+
+    apply_fn: Option<ApplyFn<'a, T, usize>>,
+    validators: Vec<Validator<'a, usize>>,
+    default: Option<usize>,
+}
+
+pub struct SetupWizardStepSelectBuilder<'a, T> {
+    label: &'a str,
+    id: Option<&'a str>,
+    conditionals: Vec<Conditional<'a>>,
+
+    options: &'a [&'a str],
+    apply_fn: Option<ApplyFn<'a, T, usize>>,
+    default: usize,
+}
+
+pub struct SetupWizardStepEnableBuilder<'a, T> {
+    label: &'a str,
+    id: Option<&'a str>,
+    conditionals: Vec<Conditional<'a>>,
+
+    apply_fn: Option<ApplyFn<'a, T, bool>>,
+    default: bool,
+}
+
+pub enum SetupWizardAnswer {
+    Text(String),
+    SignedNumber(isize),
+    UnsignedNumber(usize),
+    Select(usize),
+    Enable(bool),
+}
+
+#[derive(Error, Debug)]
+pub enum SetupWizardError {
+    #[error("Failed to start interactive config: {0}")]
+    IO(#[from] std::io::Error),
+
+    #[error("Interactive config cancelled")]
+    Cancelled,
+}
+
+impl<'a, T> SetupWizardStep<'a, T> {
+    pub fn section(label: &'a str) -> SetupWizardStepSectionBuilder<'a, T> {
+        SetupWizardStepSectionBuilder {
+            label,
+            conditionals: Vec::new(),
+
+            phantom_data: PhantomData,
+        }
+    }
+
+    pub fn warning(label: &'a str) -> SetupWizardStepWarningBuilder<'a, T> {
+        SetupWizardStepWarningBuilder {
+            label,
+            conditionals: Vec::new(),
+
+            phantom_data: PhantomData,
+        }
+    }
+
+    pub fn text(label: &'a str) -> SetupWizardStepTextBuilder<'a, T> {
+        SetupWizardStepTextBuilder {
+            label,
+            id: None,
+            conditionals: Vec::new(),
+
+            apply_fn: None,
+            validators: Vec::new(),
+            default: None,
+        }
+    }
+
+    pub fn signed_number(label: &'a str) -> SetupWizardStepSignedNumberBuilder<'a, T> {
+        SetupWizardStepSignedNumberBuilder {
+            label,
+            id: None,
+            conditionals: Vec::new(),
+
+            apply_fn: None,
+            validators: Vec::new(),
+            default: None,
+        }
+    }
+
+    pub fn unsigned_number(label: &'a str) -> SetupWizardStepUnsignedNumberBuilder<'a, T> {
+        SetupWizardStepUnsignedNumberBuilder {
+            label,
+            id: None,
+            conditionals: Vec::new(),
+
+            apply_fn: None,
+            validators: Vec::new(),
+            default: None,
+        }
+    }
+
+    pub fn select(label: &'a str, options: &'a [&'a str]) -> SetupWizardStepSelectBuilder<'a, T> {
+        SetupWizardStepSelectBuilder {
+            label,
+            id: None,
+            conditionals: Vec::new(),
+
+            options,
+            apply_fn: None,
+            default: 0,
+        }
+    }
+
+    pub fn enable(label: &'a str) -> SetupWizardStepEnableBuilder<'a, T> {
+        SetupWizardStepEnableBuilder {
+            label,
+            id: None,
+            conditionals: Vec::new(),
+
+            apply_fn: None,
+            default: false,
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepSectionBuilder<'a, T> {
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: None,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::Section,
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepWarningBuilder<'a, T> {
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: None,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::Warning,
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepTextBuilder<'a, T> {
+    pub fn with_id(mut self, id: &'a str) -> Self {
+        self.id = Some(id);
+
+        self
+    }
+
+    pub fn with_default_value(mut self, default: &'a str) -> Self {
+        self.default = Some(default);
+
+        self
+    }
+
+    pub fn apply_using<F>(mut self, mutator: F) -> Self
+    where
+        F: Fn(&mut T, &String) + 'static,
+    {
+        self.apply_fn = Some(Box::new(mutator));
+
+        self
+    }
+
+    pub fn validate_using<F>(mut self, validator: F, error_message: &'a str) -> Self
+    where
+        F: Fn(&String) -> bool + 'static,
+    {
+        self.validators.push((Box::new(validator), error_message));
+
+        self
+    }
+
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: self.id,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::Text {
+                apply_fn: self.apply_fn,
+                validators: self.validators,
+                default: self.default,
+            },
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepSignedNumberBuilder<'a, T> {
+    pub fn with_id(mut self, id: &'a str) -> Self {
+        self.id = Some(id);
+
+        self
+    }
+
+    pub fn with_default_value(mut self, default: isize) -> Self {
+        self.default = Some(default);
+
+        self
+    }
+
+    pub fn apply_using<F>(mut self, mutator: F) -> Self
+    where
+        F: Fn(&mut T, &isize) + 'static,
+    {
+        self.apply_fn = Some(Box::new(mutator));
+
+        self
+    }
+
+    pub fn validate_using<F>(mut self, validator: F, error_message: &'a str) -> Self
+    where
+        F: Fn(&isize) -> bool + 'static,
+    {
+        self.validators.push((Box::new(validator), error_message));
+
+        self
+    }
+
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: self.id,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::SignedNumber {
+                apply_fn: self.apply_fn,
+                validators: self.validators,
+                default: self.default,
+            },
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepUnsignedNumberBuilder<'a, T> {
+    pub fn with_id(mut self, id: &'a str) -> Self {
+        self.id = Some(id);
+
+        self
+    }
+
+    pub fn with_default_value(mut self, default: usize) -> Self {
+        self.default = Some(default);
+
+        self
+    }
+
+    pub fn apply_using<F>(mut self, mutator: F) -> Self
+    where
+        F: Fn(&mut T, &usize) + 'static,
+    {
+        self.apply_fn = Some(Box::new(mutator));
+
+        self
+    }
+
+    pub fn validate_using<F>(mut self, validator: F, error_message: &'a str) -> Self
+    where
+        F: Fn(&usize) -> bool + 'static,
+    {
+        self.validators.push((Box::new(validator), error_message));
+
+        self
+    }
+
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: self.id,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::UnsignedNumber {
+                apply_fn: self.apply_fn,
+                validators: self.validators,
+                default: self.default,
+            },
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepSelectBuilder<'a, T> {
+    pub fn with_id(mut self, id: &'a str) -> Self {
+        self.id = Some(id);
+
+        self
+    }
+
+    pub fn with_default_value(mut self, default: usize) -> Self {
+        self.default = default;
+
+        self
+    }
+
+    pub fn apply_using<F>(mut self, mutator: F) -> Self
+    where
+        F: Fn(&mut T, &usize) + 'static,
+    {
+        self.apply_fn = Some(Box::new(mutator));
+
+        self
+    }
+
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: self.id,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::Select {
+                options: self.options,
+                apply_fn: self.apply_fn,
+                default: self.default,
+            },
+        }
+    }
+}
+
+impl<'a, T> SetupWizardStepEnableBuilder<'a, T> {
+    pub fn with_id(mut self, id: &'a str) -> Self {
+        self.id = Some(id);
+
+        self
+    }
+
+    pub fn with_default_value(mut self, default: bool) -> Self {
+        self.default = default;
+
+        self
+    }
+
+    pub fn apply_using<F>(mut self, mutator: F) -> Self
+    where
+        F: Fn(&mut T, &bool) + 'static,
+    {
+        self.apply_fn = Some(Box::new(mutator));
+
+        self
+    }
+
+    pub fn only_if<F>(mut self, source_step_id: &'a str, condition: F) -> Self
+    where
+        F: Fn(&SetupWizardAnswer) -> bool + 'static,
+    {
+        self.conditionals
+            .push((source_step_id, Box::new(condition)));
+
+        self
+    }
+
+    pub fn build(self) -> SetupWizardStep<'a, T> {
+        SetupWizardStep {
+            label: self.label,
+            id: self.id,
+            conditionals: self.conditionals,
+
+            kind: SetupWizardStepKind::Enable {
+                apply_fn: self.apply_fn,
+                default: self.default,
+            },
+        }
+    }
+}
+
+impl<'a, T> SetupWizard<'a, T> {
+    pub fn new(steps: &'a [SetupWizardStep<T>]) -> Self {
+        SetupWizard { title: None, steps }
+    }
+
+    pub fn with_title(mut self, title: &'a str) -> Self {
+        self.title = Some(title);
+
+        self
+    }
+
+    pub fn run(&self, mut initial_value: T) -> Result<T, SetupWizardError> {
+        enable_raw_mode()?;
+        let backend = CrosstermBackend::new(std::io::stdout());
+
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(1),
+            },
+        )?;
+
+        if let Some(title) = self.title {
+            terminal.insert_before(1, |buffer| Self::render_header_line(buffer, title))?;
+        }
+
+        let mut important_answers: HashMap<String, SetupWizardAnswer> = HashMap::new();
+
+        'step_loop: for step in self.steps {
+            for (target_id, conditional) in &step.conditionals {
+                if let Some(answer) = important_answers.get(*target_id) {
+                    if !(conditional)(answer) {
+                        continue 'step_loop;
+                    }
+                } else {
+                    terminal.insert_before(1, |buffer| {
+                        Self::render_error_line(
+                            buffer,
+                            &format!(
+                                "Hey developer! The step id \"{target_id}\" should have been \
+                                 answered by this point! Check your answer ordering and \
+                                 conditionals!"
+                            ),
+                        );
+                    })?;
+                }
+            }
+
+            match step.kind {
+                SetupWizardStepKind::Section => {
+                    terminal
+                        .insert_before(1, |buffer| Self::render_section_line(buffer, step.label))?;
+
+                    continue 'step_loop;
+                }
+                SetupWizardStepKind::Warning => {
+                    terminal
+                        .insert_before(1, |buffer| Self::render_warning_line(buffer, step.label))?;
+
+                    continue 'step_loop;
+                }
+                _ => {}
+            }
+
+            let (new_value, answer) = Self::prompt_step(initial_value, &mut terminal, step)?;
+
+            initial_value = new_value;
+
+            terminal.insert_before(1, |buffer| {
+                Self::render_response_line(buffer, step, &answer);
+            })?;
+
+            if let Some(id) = step.id {
+                important_answers.insert(id.to_string(), answer);
+            }
+        }
+
+        disable_raw_mode()?;
+        terminal.clear()?;
+
+        Ok(initial_value)
+    }
+
+    fn prompt_step(
+        mut input: T,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        step: &SetupWizardStep<T>,
+    ) -> Result<(T, SetupWizardAnswer), SetupWizardError> {
+        let mut active_error = None;
+
+        let mut text_buffer = String::new();
+        let mut text_cursor_position: usize;
+        let mut select_index: usize = 0;
+        let mut enable_value = true;
+
+        match &step.kind {
+            SetupWizardStepKind::Section | SetupWizardStepKind::Warning => {}
+            SetupWizardStepKind::Text {
+                apply_fn: _,
+                validators: _,
+                default,
+            } => {
+                if let Some(default) = default {
+                    text_buffer = default.to_string();
+                }
+            }
+            SetupWizardStepKind::SignedNumber {
+                apply_fn: _,
+                validators: _,
+                default,
+            } => {
+                if let Some(default) = default {
+                    text_buffer = default.to_string();
+                }
+            }
+            SetupWizardStepKind::UnsignedNumber {
+                apply_fn: _,
+                validators: _,
+                default,
+            } => {
+                if let Some(default) = default {
+                    text_buffer = default.to_string();
+                }
+            }
+            SetupWizardStepKind::Select {
+                options: _,
+                apply_fn: _,
+                default,
+            } => {
+                select_index = *default;
+            }
+            SetupWizardStepKind::Enable {
+                apply_fn: _,
+                default,
+            } => {
+                enable_value = *default;
+            }
+        }
+
+        text_cursor_position = text_buffer.len();
+
+        'input_loop: loop {
+            terminal.draw(|frame| {
+                let area = frame.area();
+                let line = Self::build_prompt_line(
+                    step,
+                    active_error,
+                    &text_buffer,
+                    select_index,
+                    enable_value,
+                );
+
+                frame.render_widget(Paragraph::new(line), area);
+
+                if matches!(
+                    step.kind,
+                    SetupWizardStepKind::Text { .. }
+                        | SetupWizardStepKind::SignedNumber { .. }
+                        | SetupWizardStepKind::UnsignedNumber { .. }
+                ) {
+                    let prefix_length = Self::prompt_prefix_len(step);
+
+                    frame.set_cursor_position((
+                        area.x
+                            + prefix_length
+                            + u16::try_from(text_cursor_position).unwrap_or(u16::MAX),
+                        area.y,
+                    ));
+                }
+            })?;
+
+            let Event::Key(key) = event::read()? else {
+                continue 'input_loop;
+            };
+
+            if key.kind != KeyEventKind::Press {
+                continue 'input_loop;
+            }
+
+            match &step.kind {
+                SetupWizardStepKind::Section | SetupWizardStepKind::Warning => {
+                    return Ok((input, SetupWizardAnswer::Enable(false)));
+                }
+                SetupWizardStepKind::Text {
+                    apply_fn,
+                    validators,
+                    ..
+                } => match key.code {
+                    KeyCode::Enter => {
+                        for (validator, error_message) in validators {
+                            if !((validator)(&text_buffer)) {
+                                active_error = Some(*error_message);
+
+                                continue 'input_loop;
+                            }
+                        }
+
+                        if let Some(apply_fn) = apply_fn {
+                            (apply_fn)(&mut input, &text_buffer);
+                        }
+
+                        return Ok((input, SetupWizardAnswer::Text(text_buffer)));
+                    }
+                    KeyCode::Backspace => {
+                        if text_cursor_position >= text_buffer.len() {
+                            text_buffer.pop();
+                        } else if text_cursor_position > 0 {
+                            text_buffer.remove(text_cursor_position.saturating_sub(1));
+                        }
+
+                        text_cursor_position = text_cursor_position.saturating_sub(1);
+                    }
+                    KeyCode::Delete => {
+                        if text_cursor_position < text_buffer.len() {
+                            text_buffer.remove(text_cursor_position);
+                        }
+                    }
+                    KeyCode::Left => {
+                        text_cursor_position = text_cursor_position.saturating_sub(1);
+                    }
+                    KeyCode::Right => {
+                        text_cursor_position = text_cursor_position
+                            .saturating_add(1)
+                            .min(text_buffer.len());
+                    }
+                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    KeyCode::Char(c) => {
+                        if text_cursor_position >= text_buffer.len() {
+                            text_buffer.push(c);
+                        } else {
+                            text_buffer.insert(text_cursor_position, c);
+                        }
+
+                        text_cursor_position = text_cursor_position.saturating_add(1);
+                    }
+                    KeyCode::Esc => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    _ => {}
+                },
+                SetupWizardStepKind::SignedNumber {
+                    apply_fn,
+                    validators,
+                    ..
+                } => match key.code {
+                    KeyCode::Enter if let Ok(parsed_isize) = text_buffer.parse::<isize>() => {
+                        for (validator, error_message) in validators {
+                            if !((validator)(&parsed_isize)) {
+                                active_error = Some(*error_message);
+
+                                continue 'input_loop;
+                            }
+                        }
+
+                        if let Some(apply_fn) = apply_fn {
+                            (apply_fn)(&mut input, &parsed_isize);
+                        }
+
+                        return Ok((input, SetupWizardAnswer::SignedNumber(parsed_isize)));
+                    }
+                    KeyCode::Backspace => {
+                        if text_cursor_position >= text_buffer.len() {
+                            text_buffer.pop();
+                        } else if text_cursor_position > 0 {
+                            text_buffer.remove(text_cursor_position.saturating_sub(1));
+                        }
+
+                        text_cursor_position = text_cursor_position.saturating_sub(1);
+                    }
+                    KeyCode::Delete => {
+                        if text_cursor_position < text_buffer.len() {
+                            text_buffer.remove(text_cursor_position);
+                        }
+                    }
+                    KeyCode::Left => {
+                        text_cursor_position = text_cursor_position.saturating_sub(1);
+                    }
+                    KeyCode::Right => {
+                        text_cursor_position = text_cursor_position
+                            .saturating_add(1)
+                            .min(text_buffer.len());
+                    }
+                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    KeyCode::Char(c) => {
+                        if (c == '-' && !text_buffer.contains('-') && text_cursor_position == 0)
+                            || c.is_ascii_digit()
+                        {
+                            if text_cursor_position >= text_buffer.len() {
+                                text_buffer.push(c);
+                            } else {
+                                text_buffer.insert(text_cursor_position, c);
+                            }
+
+                            text_cursor_position = text_cursor_position.saturating_add(1);
+                        }
+                    }
+                    KeyCode::Esc => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    _ => {}
+                },
+                SetupWizardStepKind::UnsignedNumber {
+                    apply_fn,
+                    validators,
+                    ..
+                } => match key.code {
+                    KeyCode::Enter if let Ok(parsed_usize) = text_buffer.parse::<usize>() => {
+                        for (validator, error_message) in validators {
+                            active_error = Some(*error_message);
+
+                            if !((validator)(&parsed_usize)) {
+                                continue 'input_loop;
+                            }
+                        }
+
+                        if let Some(apply_fn) = apply_fn {
+                            (apply_fn)(&mut input, &parsed_usize);
+                        }
+
+                        return Ok((input, SetupWizardAnswer::UnsignedNumber(parsed_usize)));
+                    }
+                    KeyCode::Backspace => {
+                        if text_cursor_position >= text_buffer.len() {
+                            text_buffer.pop();
+                        } else if text_cursor_position > 0 {
+                            text_buffer.remove(text_cursor_position.saturating_sub(1));
+                        }
+
+                        text_cursor_position = text_cursor_position.saturating_sub(1);
+                    }
+                    KeyCode::Delete => {
+                        if text_cursor_position < text_buffer.len() {
+                            text_buffer.remove(text_cursor_position);
+                        }
+                    }
+                    KeyCode::Left => {
+                        text_cursor_position = text_cursor_position.saturating_sub(1);
+                    }
+                    KeyCode::Right => {
+                        text_cursor_position = text_cursor_position
+                            .saturating_add(1)
+                            .min(text_buffer.len());
+                    }
+                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    KeyCode::Char(c) => {
+                        if c.is_ascii_digit() {
+                            if text_cursor_position >= text_buffer.len() {
+                                text_buffer.push(c);
+                            } else {
+                                text_buffer.insert(text_cursor_position, c);
+                            }
+
+                            text_cursor_position = text_cursor_position.saturating_add(1);
+                        }
+                    }
+                    KeyCode::Esc => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    _ => {}
+                },
+
+                SetupWizardStepKind::Select {
+                    options, apply_fn, ..
+                } => match key.code {
+                    KeyCode::Enter => {
+                        if let Some(apply_fn) = apply_fn {
+                            (apply_fn)(&mut input, &select_index);
+                        }
+
+                        return Ok((input, SetupWizardAnswer::Select(select_index)));
+                    }
+                    KeyCode::Up | KeyCode::Left => {
+                        select_index = (select_index + options.len() - 1) % options.len();
+                    }
+                    KeyCode::Down | KeyCode::Right => {
+                        select_index = (select_index + 1) % options.len();
+                    }
+                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    KeyCode::Esc => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    _ => {}
+                },
+
+                SetupWizardStepKind::Enable { apply_fn, .. } => match key.code {
+                    KeyCode::Enter => {
+                        if let Some(apply_fn) = apply_fn {
+                            (apply_fn)(&mut input, &enable_value);
+                        }
+
+                        return Ok((input, SetupWizardAnswer::Enable(enable_value)));
+                    }
+                    KeyCode::Char('y' | 'Y') => enable_value = true,
+                    KeyCode::Char('n' | 'N') => enable_value = false,
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab => enable_value = !enable_value,
+                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    KeyCode::Esc => {
+                        Self::cancel_configuration(terminal);
+
+                        return Err(SetupWizardError::Cancelled);
+                    }
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    fn build_prompt_line<'b>(
+        step: &'b SetupWizardStep<T>,
+        active_error: Option<&'b str>,
+        text_buffer: &'b str,
+        select_index: usize,
+        enable_value: bool,
+    ) -> Line<'b> {
+        let marker = Span::styled(
+            "? ",
+            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+        );
+
+        let label = Span::styled(
+            format!("{} ", step.label),
+            Style::new().add_modifier(Modifier::BOLD),
+        );
+
+        let value = match &step.kind {
+            SetupWizardStepKind::Section | SetupWizardStepKind::Warning => Span::raw(""),
+            SetupWizardStepKind::Text { .. }
+            | SetupWizardStepKind::SignedNumber { .. }
+            | SetupWizardStepKind::UnsignedNumber { .. } => Span::raw(text_buffer.to_string()),
+            SetupWizardStepKind::Select { options, .. } => {
+                let rendered: Vec<String> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, opt)| {
+                        if i == select_index {
+                            format!("[{opt}]")
+                        } else {
+                            format!(" {opt} ")
+                        }
+                    })
+                    .collect();
+
+                Span::styled(rendered.join("  "), Style::new().fg(Color::Yellow))
+            }
+            SetupWizardStepKind::Enable { .. } => {
+                let text = if enable_value { "Yes" } else { "No" };
+
+                Span::styled(
+                    format!("{text}    (y/n, or ←/→ to toggle)"),
+                    Style::new().fg(Color::Yellow),
+                )
+            }
+        };
+
+        if let Some(active_error) = active_error {
+            Line::from(vec![
+                marker,
+                label,
+                value,
+                Span::styled(format!("  ({active_error})"), Style::new().fg(Color::Red)),
+            ])
+        } else {
+            Line::from(vec![marker, label, value])
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn prompt_prefix_len(step: &SetupWizardStep<T>) -> u16 {
+        2 + u16::try_from(step.label.chars().count()).unwrap_or(u16::MAX) + 1
+    }
+
+    fn render_header_line(buffer: &mut Buffer, title: &str) {
+        Paragraph::new(Line::from(vec![Span::styled(
+            title,
+            Style::new().fg(Color::White),
+        )]))
+        .render(buffer.area, buffer);
+    }
+
+    fn render_section_line(buffer: &mut Buffer, title: &str) {
+        Paragraph::new(Line::from(vec![Span::styled(
+            title,
+            Style::new().fg(Color::LightGreen),
+        )]))
+        .render(buffer.area, buffer);
+    }
+
+    fn render_warning_line(buffer: &mut Buffer, title: &str) {
+        Paragraph::new(Line::from(vec![Span::styled(
+            title,
+            Style::new().fg(Color::LightRed),
+        )]))
+        .render(buffer.area, buffer);
+    }
+
+    fn render_error_line(buffer: &mut Buffer, title: &str) {
+        Paragraph::new(Line::from(vec![Span::styled(
+            title,
+            Style::new().fg(Color::Red),
+        )]))
+        .render(buffer.area, buffer);
+    }
+
+    fn render_response_line(
+        buffer: &mut Buffer,
+        step: &SetupWizardStep<T>,
+        answer: &SetupWizardAnswer,
+    ) {
+        let check = Span::styled("✓ ", Style::new().fg(Color::Green));
+
+        let label = Span::styled(
+            format!("{} ", step.label),
+            Style::new().add_modifier(Modifier::BOLD),
+        );
+
+        let value = Span::styled(
+            Self::format_answer(step, answer),
+            Style::new().fg(Color::Cyan),
+        );
+
+        Paragraph::new(Line::from(vec![check, label, value])).render(buffer.area, buffer);
+    }
+
+    fn format_answer(step: &SetupWizardStep<T>, answer: &SetupWizardAnswer) -> String {
+        match (&step.kind, answer) {
+            (SetupWizardStepKind::Text { .. }, SetupWizardAnswer::Text(string)) => string.clone(),
+            (SetupWizardStepKind::SignedNumber { .. }, SetupWizardAnswer::SignedNumber(number)) => {
+                format!("{number}")
+            }
+            (
+                SetupWizardStepKind::UnsignedNumber { .. },
+                SetupWizardAnswer::UnsignedNumber(number),
+            ) => {
+                format!("{number}")
+            }
+            (SetupWizardStepKind::Select { options, .. }, SetupWizardAnswer::Select(index)) => {
+                options.get(*index).unwrap_or(&"Unknown").to_string()
+            }
+            (SetupWizardStepKind::Enable { .. }, SetupWizardAnswer::Enable(b)) => {
+                if *b { "Yes" } else { "No" }.to_string()
+            }
+            _ => "Unknown".to_string(),
+        }
+    }
+
+    fn cancel_configuration(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+        let _ = disable_raw_mode();
+
+        let _ = terminal.clear();
+    }
+}
