@@ -1,5 +1,9 @@
 [package]
 name = "tui_setup_wizard"
+description = "A library to add quick tui setup wizards to rust applications"
+homepage = "https://github.com/FizzyApple12/tui-setup-wizard/"
+repository = "https://github.com/FizzyApple12/tui-setup-wizard/"
+readme = "README.md"
 version = "0.1.0"
 edition = "2024"
 
