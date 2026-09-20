@@ -82,7 +82,7 @@ fn main() -> Result<(), SetupWizardError> {
             )
             .validate_using(
                 |url| url.starts_with("postgresql://"),
-                "Connection URL mus use the \"postgresql://\" format",
+                "Connection URL must use the \"postgresql://\" format",
             )
             .only_if("database_backend", |answer| {
                 matches!(answer, SetupWizardAnswer::Select(0))

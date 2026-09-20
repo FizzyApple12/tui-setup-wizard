@@ -139,11 +139,11 @@ pub enum SetupWizardAnswer {
     Text(String),
     /// An answer to a Signed Number Input Setup Wizard step
     SignedNumber(isize),
-    /// An answer to a Unsigned Number Input Setup Wizard step
+    /// An answer to an Unsigned Number Input Setup Wizard step
     UnsignedNumber(usize),
     /// An answer to a Selection Input Setup Wizard step, contains the index selected
     Select(usize),
-    /// An answer to a Enable Input Setup Wizard step
+    /// An answer to an Enable Input Setup Wizard step
     Enable(bool),
 }
 
@@ -206,7 +206,7 @@ impl<'a, T> SetupWizardStep<'a, T> {
         }
     }
 
-    /// Creates a Unsigned Number Input Setup Wizard step, used for getting a unsigned number from the user
+    /// Creates an Unsigned Number Input Setup Wizard step, used for getting a unsigned number from the user
     pub fn unsigned_number(label: &'a str) -> SetupWizardStepUnsignedNumberBuilder<'a, T> {
         SetupWizardStepUnsignedNumberBuilder {
             label,
